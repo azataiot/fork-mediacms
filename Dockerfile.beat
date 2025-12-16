@@ -1,0 +1,71 @@
+# MediaCMS Celery Beat Scheduler
+# Multi-architecture: linux/amd64, linux/arm64
+# Image: azataiot/mediacms-beat
+#
+# Runs: Celery Beat (single process)
+# Use for: Task scheduling only (lightweight, no FFmpeg needed)
+
+FROM python:3.13.5-slim-bookworm
+
+SHELL ["/bin/bash", "-c"]
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV CELERY_APP='cms'
+ENV VIRTUAL_ENV=/home/mediacms.io
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Install minimal system dependencies
+RUN apt-get update -y && \
+    apt-get -y upgrade && \
+    apt-get install --no-install-recommends -y \
+        procps \
+        build-essential \
+        pkg-config \
+        zlib1g-dev \
+        zlib1g \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libxmlsec1-openssl \
+        libpq-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up virtualenv
+RUN mkdir -p /home/mediacms.io/mediacms/logs && \
+    cd /home/mediacms.io && \
+    python3 -m venv $VIRTUAL_ENV
+
+# Copy and install requirements
+COPY requirements.txt ./
+
+RUN pip install --no-cache-dir uv && \
+    uv pip install --no-binary lxml --no-binary xmlsec -r requirements.txt && \
+    apt-get purge -y --auto-remove \
+        build-essential \
+        pkg-config \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libpq-dev
+
+# Copy application files
+COPY . /home/mediacms.io/mediacms
+WORKDIR /home/mediacms.io/mediacms
+
+# Copy local settings for Docker
+RUN cp deploy/docker/local_settings.py cms/local_settings.py
+
+# Create entrypoint
+RUN cat > /entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+mkdir -p /home/mediacms.io/mediacms/logs
+
+exec "$@"
+EOF
+chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+CMD ["celery", "-A", "cms", "beat", "-l", "info", "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]

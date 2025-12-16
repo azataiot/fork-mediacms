@@ -1,0 +1,138 @@
+# MediaCMS Celery Worker (with FFmpeg + Bento4)
+# Multi-architecture: linux/amd64, linux/arm64
+# Image: azataiot/mediacms-worker
+#
+# Runs: Celery worker (single process)
+# Use for: Video encoding, HLS generation, sprite creation, transcription
+
+############ BUILD STAGE - Download and compile FFmpeg + Bento4 ############
+FROM python:3.13.5-slim-bookworm AS build-media-tools
+
+ARG TARGETARCH
+
+# Install build dependencies
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        xz-utils \
+        cmake \
+        g++ \
+        make \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download architecture-specific FFmpeg static builds
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        FFMPEG_ARCH="amd64"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        FFMPEG_ARCH="arm64"; \
+    else \
+        echo "Unsupported architecture: $TARGETARCH" && exit 1; \
+    fi && \
+    wget -q "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz" && \
+    mkdir -p ffmpeg-tmp && \
+    tar -xf "ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz" --strip-components 1 -C ffmpeg-tmp && \
+    cp -v ffmpeg-tmp/ffmpeg ffmpeg-tmp/ffprobe ffmpeg-tmp/qt-faststart /usr/local/bin && \
+    rm -rf ffmpeg-tmp "ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz"
+
+# Build Bento4 from source for multi-arch support
+RUN git clone --depth 1 https://github.com/axiomatic-systems/Bento4.git /tmp/bento4-src && \
+    mkdir -p /tmp/bento4-src/cmakebuild && \
+    cd /tmp/bento4-src/cmakebuild && \
+    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    make -j$(nproc) && \
+    mkdir -p /home/mediacms.io/bento4/bin && \
+    cp -v /tmp/bento4-src/cmakebuild/mp4* /home/mediacms.io/bento4/bin/ && \
+    cp -v /tmp/bento4-src/cmakebuild/aac* /home/mediacms.io/bento4/bin/ 2>/dev/null || true && \
+    rm -rf /tmp/bento4-src
+
+############ RUNTIME STAGE ############
+FROM python:3.13.5-slim-bookworm AS base
+
+SHELL ["/bin/bash", "-c"]
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV CELERY_APP='cms'
+ENV VIRTUAL_ENV=/home/mediacms.io
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Install system dependencies
+RUN apt-get update -y && \
+    apt-get -y upgrade && \
+    apt-get install --no-install-recommends -y \
+        imagemagick \
+        procps \
+        build-essential \
+        pkg-config \
+        zlib1g-dev \
+        zlib1g \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libxmlsec1-openssl \
+        libpq-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up virtualenv
+RUN mkdir -p /home/mediacms.io/mediacms/{logs,media_files/hls} && \
+    cd /home/mediacms.io && \
+    python3 -m venv $VIRTUAL_ENV
+
+# Copy and install requirements
+COPY requirements.txt requirements-dev.txt ./
+
+ARG DEVELOPMENT_MODE=False
+RUN pip install --no-cache-dir uv && \
+    uv pip install --no-binary lxml --no-binary xmlsec -r requirements.txt && \
+    if [ "$DEVELOPMENT_MODE" = "True" ]; then \
+        uv pip install -r requirements-dev.txt; \
+    fi && \
+    apt-get purge -y --auto-remove \
+        build-essential \
+        pkg-config \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libpq-dev
+
+# Copy ffmpeg and Bento4 from build stage
+COPY --from=build-media-tools /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=build-media-tools /usr/local/bin/ffprobe /usr/local/bin/ffprobe
+COPY --from=build-media-tools /usr/local/bin/qt-faststart /usr/local/bin/qt-faststart
+COPY --from=build-media-tools /home/mediacms.io/bento4 /home/mediacms.io/bento4
+
+# Copy application files
+COPY . /home/mediacms.io/mediacms
+WORKDIR /home/mediacms.io/mediacms
+
+# Configure ImageMagick for large files
+COPY deploy/docker/policy.xml /etc/ImageMagick-6/policy.xml
+
+# Copy local settings for Docker
+RUN cp deploy/docker/local_settings.py cms/local_settings.py
+
+# Create entrypoint
+RUN cat > /entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+mkdir -p /home/mediacms.io/mediacms/{logs,media_files/hls}
+mkdir -p /var/run/mediacms
+
+exec "$@"
+EOF
+chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Run both short and long task queues by default
+CMD ["celery", "-A", "cms", "worker", "-l", "info", "--concurrency=2", "-Q", "short_tasks,long_tasks"]
+
+############ FULL IMAGE (with Whisper) ############
+FROM base AS full
+
+COPY requirements-full.txt ./
+RUN mkdir -p /root/.cache/ && \
+    chmod go+rwx /root/ && \
+    chmod go+rwx /root/.cache/
+RUN uv pip install -r requirements-full.txt
