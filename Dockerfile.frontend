@@ -106,9 +106,9 @@ server {
         proxy_read_timeout 300s;
     }
 
-    # All other requests go to backend (Django handles HTML rendering)
+    # All other requests go to web server (Django handles HTML rendering)
     location / {
-        proxy_pass http://backend:80;
+        proxy_pass http://web:80;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
