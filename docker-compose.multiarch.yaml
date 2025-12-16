@@ -6,7 +6,7 @@
 #   - azataiot/mediacms-worker:latest   - Celery worker + FFmpeg + Bento4
 #   - azataiot/mediacms-worker:full     - Celery worker + FFmpeg + Bento4 + Whisper
 #   - azataiot/mediacms-beat:latest     - Celery Beat scheduler
-#   - azataiot/mediacms-frontend:latest - Nginx reverse proxy + static files
+#   - azataiot/mediacms-frontend:latest - Nginx reverse proxy
 #
 # Usage:
 #   docker compose -f docker-compose.multiarch.yaml up
@@ -57,7 +57,6 @@ services:
       replicas: 1
     volumes:
       - media_files:/home/mediacms.io/mediacms/media_files
-      - static_files:/home/mediacms.io/mediacms/static
     environment:
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
       ADMIN_USER: ${ADMIN_USER:-admin}
@@ -106,7 +105,7 @@ services:
     networks:
       - mediacms-net
 
-  # Frontend (Nginx reverse proxy + static files)
+  # Frontend (Nginx reverse proxy)
   frontend:
     image: azataiot/mediacms-frontend:latest
     build:
@@ -114,8 +113,6 @@ services:
       dockerfile: Dockerfile.frontend
     ports:
       - "80:80"
-    volumes:
-      - static_files:/usr/share/nginx/html/static:ro
     depends_on:
       - web
     networks:
@@ -124,7 +121,6 @@ services:
 volumes:
   postgres_data:
   media_files:
-  static_files:
 
 networks:
   mediacms-net:

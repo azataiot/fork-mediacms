@@ -13,7 +13,6 @@ on:
       - 'Dockerfile.beat'
       - 'Dockerfile.frontend'
       - 'requirements*.txt'
-      - 'frontend/**'
       - '.github/workflows/docker-multiarch-build.yml'
 
 env:
@@ -211,7 +210,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.title=MediaCMS Frontend
-            org.opencontainers.image.description=MediaCMS Frontend - Nginx reverse proxy + static files. Multi-arch (amd64/arm64).
+            org.opencontainers.image.description=MediaCMS Frontend - Nginx reverse proxy. Multi-arch (amd64/arm64).
             org.opencontainers.image.vendor=MediaCMS
             org.opencontainers.image.url=https://mediacms.io/
             org.opencontainers.image.source=https://github.com/mediacms-io/mediacms
