@@ -1,11 +1,12 @@
 # Multi-architecture MediaCMS Docker Compose
 # Supports: linux/amd64, linux/arm64 (Apple Silicon)
 #
-# Image variants:
-#   - azataiot/mediacms-backend:lite   - Django only (web, celery_beat, migrations)
-#   - azataiot/mediacms-backend:latest - Django + FFmpeg + Bento4 (celery workers)
-#   - azataiot/mediacms-backend:full   - Django + FFmpeg + Bento4 + Whisper
-#   - azataiot/mediacms-frontend:latest - Nginx frontend
+# Images (each runs a single process - no supervisord):
+#   - azataiot/mediacms-web:latest      - Django + uWSGI + Nginx (API server)
+#   - azataiot/mediacms-worker:latest   - Celery worker + FFmpeg + Bento4
+#   - azataiot/mediacms-worker:full     - Celery worker + FFmpeg + Bento4 + Whisper
+#   - azataiot/mediacms-beat:latest     - Celery Beat scheduler
+#   - azataiot/mediacms-frontend:latest - Nginx reverse proxy + static files
 #
 # Usage:
 #   docker compose -f docker-compose.multiarch.yaml up
@@ -14,10 +15,8 @@
 #   docker compose -f docker-compose.multiarch.yaml build
 #   docker compose -f docker-compose.multiarch.yaml up
 
-version: "3.8"
-
 services:
-  # Database
+  # PostgreSQL Database
   db:
     image: postgres:17.2-alpine
     volumes:
@@ -48,29 +47,24 @@ services:
     networks:
       - mediacms-net
 
-  # Migrations job (runs once) - uses lite image (no FFmpeg needed)
-  migrations:
-    image: azataiot/mediacms-backend:lite
+  # Web server (Django + uWSGI + Nginx) - also handles migrations on first run
+  web:
+    image: azataiot/mediacms-web:latest
     build:
       context: .
-      dockerfile: Dockerfile.backend
-      target: base-lite
+      dockerfile: Dockerfile.web
+    deploy:
+      replicas: 1
     volumes:
       - media_files:/home/mediacms.io/mediacms/media_files
       - static_files:/home/mediacms.io/mediacms/static
     environment:
-      ENABLE_UWSGI: 'no'
-      ENABLE_NGINX: 'no'
-      ENABLE_CELERY_SHORT: 'no'
-      ENABLE_CELERY_LONG: 'no'
-      ENABLE_CELERY_BEAT: 'no'
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@localhost}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       FRONTEND_HOST: ${FRONTEND_HOST:-http://localhost}
       PORTAL_NAME: ${PORTAL_NAME:-MediaCMS}
-    command: "./deploy/docker/prestart.sh"
-    restart: on-failure
     depends_on:
       redis:
         condition: service_healthy
@@ -79,73 +73,40 @@ services:
     networks:
       - mediacms-net
 
-  # Backend API server - uses lite image (no FFmpeg needed for API)
-  backend:
-    image: azataiot/mediacms-backend:lite
+  # Celery Beat scheduler
+  beat:
+    image: azataiot/mediacms-beat:latest
     build:
       context: .
-      dockerfile: Dockerfile.backend
-      target: base-lite
-    deploy:
-      replicas: 1
+      dockerfile: Dockerfile.beat
+    restart: always
     volumes:
-      - media_files:/home/mediacms.io/mediacms/media_files
-      - static_files:/home/mediacms.io/mediacms/static
-    environment:
-      ENABLE_CELERY_BEAT: 'no'
-      ENABLE_CELERY_SHORT: 'no'
-      ENABLE_CELERY_LONG: 'no'
-      ENABLE_MIGRATIONS: 'no'
-      FRONTEND_HOST: ${FRONTEND_HOST:-http://localhost}
-      PORTAL_NAME: ${PORTAL_NAME:-MediaCMS}
-    depends_on:
-      - migrations
-    networks:
-      - mediacms-net
-
-  # Celery Beat scheduler - uses lite image (just scheduling, no encoding)
-  celery_beat:
-    image: azataiot/mediacms-backend:lite
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-      target: base-lite
-    volumes:
-      - media_files:/home/mediacms.io/mediacms/media_files
-    environment:
-      ENABLE_UWSGI: 'no'
-      ENABLE_NGINX: 'no'
-      ENABLE_CELERY_SHORT: 'no'
-      ENABLE_CELERY_LONG: 'no'
-      ENABLE_MIGRATIONS: 'no'
+      - media_files:/home/mediacms.io/mediacms/media_files:ro
     depends_on:
       - redis
-      - migrations
+      - web
     networks:
       - mediacms-net
 
-  # Celery worker - uses FULL image with FFmpeg + Bento4 for encoding tasks
-  celery_worker:
-    image: azataiot/mediacms-backend:latest
+  # Celery worker (video encoding, HLS, sprites)
+  worker:
+    image: azataiot/mediacms-worker:latest
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: Dockerfile.worker
       target: base
     deploy:
       replicas: 1
+    restart: always
     volumes:
       - media_files:/home/mediacms.io/mediacms/media_files
-    environment:
-      ENABLE_UWSGI: 'no'
-      ENABLE_NGINX: 'no'
-      ENABLE_CELERY_BEAT: 'no'
-      ENABLE_MIGRATIONS: 'no'
     depends_on:
-      - migrations
+      - redis
+      - web
     networks:
       - mediacms-net
 
-  # Frontend (nginx serving static + reverse proxy)
+  # Frontend (Nginx reverse proxy + static files)
   frontend:
     image: azataiot/mediacms-frontend:latest
     build:
@@ -156,7 +117,7 @@ services:
     volumes:
       - static_files:/usr/share/nginx/html/static:ro
     depends_on:
-      - backend
+      - web
     networks:
       - mediacms-net
 
