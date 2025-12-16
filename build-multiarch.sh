@@ -11,17 +11,20 @@
 #   ./build-multiarch.sh v1.0.0             # Build and push with specific version tag
 #   ./build-multiarch.sh --local            # Build for local architecture only (no push)
 #
-# Image variants:
-#   - mediacms-backend:lite   - Django only (for web, celery_beat, migrations)
-#   - mediacms-backend:latest - Django + FFmpeg + Bento4 (for celery workers)
-#   - mediacms-backend:full   - Django + FFmpeg + Bento4 + Whisper
-#   - mediacms-frontend:latest - Nginx frontend
+# Images:
+#   - azataiot/mediacms-web       - Django + uWSGI + Nginx (API server)
+#   - azataiot/mediacms-worker    - Celery worker + FFmpeg + Bento4
+#   - azataiot/mediacms-worker:full - Celery worker + Whisper transcription
+#   - azataiot/mediacms-beat      - Celery Beat scheduler
+#   - azataiot/mediacms-frontend  - Nginx reverse proxy
 
 set -e
 
 # Configuration
 DOCKER_USER="${DOCKER_USER:-azataiot}"
-BACKEND_IMAGE="${DOCKER_USER}/mediacms-backend"
+WEB_IMAGE="${DOCKER_USER}/mediacms-web"
+WORKER_IMAGE="${DOCKER_USER}/mediacms-worker"
+BEAT_IMAGE="${DOCKER_USER}/mediacms-beat"
 FRONTEND_IMAGE="${DOCKER_USER}/mediacms-frontend"
 PLATFORMS="linux/amd64,linux/arm64"
 
@@ -65,35 +68,42 @@ if [ "$LOCAL_ONLY" = true ]; then
     echo "Building for local architecture only..."
     echo ""
 
-    # Build backend (lite - no FFmpeg)
-    echo ">>> Building Backend (lite - no FFmpeg/Bento4)..."
+    # Build web
+    echo ">>> Building Web (Django + uWSGI + Nginx)..."
     docker buildx build \
-        --file Dockerfile.backend \
-        --target base-lite \
-        --tag "${BACKEND_IMAGE}:lite" \
+        --file Dockerfile.web \
+        --tag "${WEB_IMAGE}:${VERSION}" \
         --load \
         .
 
-    # Build backend (base - with FFmpeg)
-    echo ">>> Building Backend (base - with FFmpeg/Bento4)..."
+    # Build worker (base)
+    echo ">>> Building Worker (Celery + FFmpeg + Bento4)..."
     docker buildx build \
-        --file Dockerfile.backend \
+        --file Dockerfile.worker \
         --target base \
-        --tag "${BACKEND_IMAGE}:${VERSION}" \
+        --tag "${WORKER_IMAGE}:${VERSION}" \
         --load \
         .
 
-    # Build backend (full - with Whisper)
-    echo ">>> Building Backend (full - with Whisper)..."
+    # Build worker (full - with Whisper)
+    echo ">>> Building Worker Full (with Whisper)..."
     docker buildx build \
-        --file Dockerfile.backend \
+        --file Dockerfile.worker \
         --target full \
-        --tag "${BACKEND_IMAGE}:full" \
+        --tag "${WORKER_IMAGE}:full" \
+        --load \
+        .
+
+    # Build beat
+    echo ">>> Building Beat (Celery scheduler)..."
+    docker buildx build \
+        --file Dockerfile.beat \
+        --tag "${BEAT_IMAGE}:${VERSION}" \
         --load \
         .
 
     # Build frontend
-    echo ">>> Building Frontend..."
+    echo ">>> Building Frontend (Nginx)..."
     docker buildx build \
         --file Dockerfile.frontend \
         --tag "${FRONTEND_IMAGE}:${VERSION}" \
@@ -104,9 +114,10 @@ if [ "$LOCAL_ONLY" = true ]; then
     echo "=============================================="
     echo "Local build complete!"
     echo "Images created:"
-    echo "  - ${BACKEND_IMAGE}:lite     (Django only - for web/celery_beat)"
-    echo "  - ${BACKEND_IMAGE}:${VERSION}  (Django + FFmpeg/Bento4 - for workers)"
-    echo "  - ${BACKEND_IMAGE}:full     (Django + FFmpeg/Bento4 + Whisper)"
+    echo "  - ${WEB_IMAGE}:${VERSION}"
+    echo "  - ${WORKER_IMAGE}:${VERSION}"
+    echo "  - ${WORKER_IMAGE}:full"
+    echo "  - ${BEAT_IMAGE}:${VERSION}"
     echo "  - ${FRONTEND_IMAGE}:${VERSION}"
     echo "=============================================="
 else
@@ -114,33 +125,41 @@ else
     echo "Building and pushing multi-architecture images..."
     echo ""
 
-    # Build and push backend (lite - no FFmpeg)
-    echo ">>> Building and pushing Backend (lite)..."
+    # Build and push web
+    echo ">>> Building and pushing Web..."
     docker buildx build \
-        --file Dockerfile.backend \
-        --target base-lite \
+        --file Dockerfile.web \
         --platform $PLATFORMS \
-        --tag "${BACKEND_IMAGE}:lite" \
+        --tag "${WEB_IMAGE}:${VERSION}" \
         --push \
         .
 
-    # Build and push backend (base - with FFmpeg)
-    echo ">>> Building and pushing Backend (base)..."
+    # Build and push worker (base)
+    echo ">>> Building and pushing Worker..."
     docker buildx build \
-        --file Dockerfile.backend \
+        --file Dockerfile.worker \
         --target base \
         --platform $PLATFORMS \
-        --tag "${BACKEND_IMAGE}:${VERSION}" \
+        --tag "${WORKER_IMAGE}:${VERSION}" \
         --push \
         .
 
-    # Build and push backend (full - with Whisper)
-    echo ">>> Building and pushing Backend (full)..."
+    # Build and push worker (full)
+    echo ">>> Building and pushing Worker Full..."
     docker buildx build \
-        --file Dockerfile.backend \
+        --file Dockerfile.worker \
         --target full \
         --platform $PLATFORMS \
-        --tag "${BACKEND_IMAGE}:full" \
+        --tag "${WORKER_IMAGE}:full" \
+        --push \
+        .
+
+    # Build and push beat
+    echo ">>> Building and pushing Beat..."
+    docker buildx build \
+        --file Dockerfile.beat \
+        --platform $PLATFORMS \
+        --tag "${BEAT_IMAGE}:${VERSION}" \
         --push \
         .
 
@@ -158,26 +177,24 @@ else
         echo ">>> Also tagging as 'latest'..."
 
         docker buildx build \
-            --file Dockerfile.backend \
-            --target base-lite \
+            --file Dockerfile.web \
             --platform $PLATFORMS \
-            --tag "${BACKEND_IMAGE}:lite" \
+            --tag "${WEB_IMAGE}:latest" \
             --push \
             .
 
         docker buildx build \
-            --file Dockerfile.backend \
+            --file Dockerfile.worker \
             --target base \
             --platform $PLATFORMS \
-            --tag "${BACKEND_IMAGE}:latest" \
+            --tag "${WORKER_IMAGE}:latest" \
             --push \
             .
 
         docker buildx build \
-            --file Dockerfile.backend \
-            --target full \
+            --file Dockerfile.beat \
             --platform $PLATFORMS \
-            --tag "${BACKEND_IMAGE}:full" \
+            --tag "${BEAT_IMAGE}:latest" \
             --push \
             .
 
@@ -192,19 +209,14 @@ else
     echo ""
     echo "=============================================="
     echo "Multi-architecture build complete!"
-    echo "Images pushed:"
-    echo "  - ${BACKEND_IMAGE}:lite (amd64, arm64) - Django only"
-    echo "  - ${BACKEND_IMAGE}:${VERSION} (amd64, arm64) - Django + FFmpeg/Bento4"
-    echo "  - ${BACKEND_IMAGE}:full (amd64, arm64) - Django + FFmpeg/Bento4 + Whisper"
-    echo "  - ${FRONTEND_IMAGE}:${VERSION} (amd64, arm64)"
+    echo "Images pushed (amd64 + arm64):"
+    echo "  - ${WEB_IMAGE}:${VERSION}"
+    echo "  - ${WORKER_IMAGE}:${VERSION}"
+    echo "  - ${WORKER_IMAGE}:full"
+    echo "  - ${BEAT_IMAGE}:${VERSION}"
+    echo "  - ${FRONTEND_IMAGE}:${VERSION}"
     if [ "$VERSION" != "latest" ]; then
-        echo "  - ${BACKEND_IMAGE}:latest (amd64, arm64)"
-        echo "  - ${FRONTEND_IMAGE}:latest (amd64, arm64)"
+        echo "  - Plus :latest tags for all images"
     fi
-    echo ""
-    echo "Usage recommendation:"
-    echo "  - Web server, celery_beat, migrations: use :lite"
-    echo "  - Celery workers (encoding): use :latest"
-    echo "  - Celery workers (with transcription): use :full"
     echo "=============================================="
 fi
