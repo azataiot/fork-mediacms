@@ -1,0 +1,158 @@
+# Multi-architecture MediaCMS Backend Dockerfile
+# Supports: linux/amd64, linux/arm64
+#
+# Build targets:
+#   - base-lite:  Django app only (web server, celery beat, migrations)
+#   - base:       Django + FFmpeg + Bento4 (for celery workers that do encoding)
+#   - full:       Django + FFmpeg + Bento4 + Whisper (for transcription)
+#
+# Images:
+#   - azataiot/mediacms-backend:latest       (base - with FFmpeg/Bento4)
+#   - azataiot/mediacms-backend:lite         (base-lite - no FFmpeg/Bento4)
+#   - azataiot/mediacms-backend:full         (full - with Whisper)
+
+############ BUILD STAGE - Download and compile FFmpeg + Bento4 ############
+FROM python:3.13.5-slim-bookworm AS build-media-tools
+
+ARG TARGETARCH
+
+# Install system dependencies needed for downloading, extracting, and building
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        xz-utils \
+        unzip \
+        cmake \
+        g++ \
+        make \
+        git \
+    && rm -rf /var/lib/apt/lists/* && \
+    apt-get purge --auto-remove && \
+    apt-get clean
+
+# Download architecture-specific FFmpeg static builds from johnvansickle.com
+# amd64 -> amd64, arm64 -> arm64
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        FFMPEG_ARCH="amd64"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        FFMPEG_ARCH="arm64"; \
+    else \
+        echo "Unsupported architecture: $TARGETARCH" && exit 1; \
+    fi && \
+    wget -q "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz" && \
+    mkdir -p ffmpeg-tmp && \
+    tar -xf "ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz" --strip-components 1 -C ffmpeg-tmp && \
+    cp -v ffmpeg-tmp/ffmpeg ffmpeg-tmp/ffprobe ffmpeg-tmp/qt-faststart /usr/local/bin && \
+    rm -rf ffmpeg-tmp "ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz"
+
+# Build Bento4 from source for multi-arch support
+# Pre-built binaries only available for x86_64, so we compile from source
+RUN git clone --depth 1 https://github.com/axiomatic-systems/Bento4.git /tmp/bento4-src && \
+    mkdir -p /tmp/bento4-src/cmakebuild && \
+    cd /tmp/bento4-src/cmakebuild && \
+    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    make -j$(nproc) && \
+    mkdir -p /home/mediacms.io/bento4/bin && \
+    cp -v /tmp/bento4-src/cmakebuild/mp4* /home/mediacms.io/bento4/bin/ && \
+    cp -v /tmp/bento4-src/cmakebuild/aac* /home/mediacms.io/bento4/bin/ 2>/dev/null || true && \
+    rm -rf /tmp/bento4-src
+
+############ BASE-LITE: Django app without media processing tools ############
+# Use for: web server, celery_beat, migrations
+FROM python:3.13.5-slim-bookworm AS base-lite
+
+SHELL ["/bin/bash", "-c"]
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV CELERY_APP='cms'
+ENV VIRTUAL_ENV=/home/mediacms.io
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Install system dependencies (NO imagemagick - not needed without ffmpeg)
+RUN apt-get update -y && \
+    apt-get -y upgrade && \
+    apt-get install --no-install-recommends -y \
+        supervisor \
+        nginx \
+        procps \
+        build-essential \
+        pkg-config \
+        zlib1g-dev \
+        zlib1g \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libxmlsec1-openssl \
+        libpq-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up virtualenv
+RUN mkdir -p /home/mediacms.io/mediacms/{logs} && \
+    cd /home/mediacms.io && \
+    python3 -m venv $VIRTUAL_ENV
+
+# Copy requirements files
+COPY requirements.txt requirements-dev.txt ./
+
+# Install Python dependencies
+ARG DEVELOPMENT_MODE=False
+RUN pip install --no-cache-dir uv && \
+    uv pip install --no-binary lxml --no-binary xmlsec -r requirements.txt && \
+    if [ "$DEVELOPMENT_MODE" = "True" ]; then \
+        echo "Installing development dependencies..." && \
+        uv pip install -r requirements-dev.txt; \
+    fi && \
+    apt-get purge -y --auto-remove \
+        build-essential \
+        pkg-config \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libpq-dev
+
+# Copy application files
+COPY . /home/mediacms.io/mediacms
+WORKDIR /home/mediacms.io/mediacms
+
+# Set process control environment variables
+ENV ENABLE_UWSGI='yes' \
+    ENABLE_NGINX='yes' \
+    ENABLE_CELERY_BEAT='yes' \
+    ENABLE_CELERY_SHORT='yes' \
+    ENABLE_CELERY_LONG='yes' \
+    ENABLE_MIGRATIONS='yes'
+
+EXPOSE 9000 80
+
+RUN chmod +x ./deploy/docker/entrypoint.sh
+
+ENTRYPOINT ["./deploy/docker/entrypoint.sh"]
+CMD ["./deploy/docker/start.sh"]
+
+############ BASE: Django + FFmpeg + Bento4 ############
+# Use for: celery workers (encoding, sprites, HLS generation)
+FROM base-lite AS base
+
+# Install imagemagick (needed for sprite generation with ffmpeg)
+RUN apt-get update -y && \
+    apt-get install --no-install-recommends -y imagemagick && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy ffmpeg and Bento4 from build image
+COPY --from=build-media-tools /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=build-media-tools /usr/local/bin/ffprobe /usr/local/bin/ffprobe
+COPY --from=build-media-tools /usr/local/bin/qt-faststart /usr/local/bin/qt-faststart
+COPY --from=build-media-tools /home/mediacms.io/bento4 /home/mediacms.io/bento4
+
+# Required for sprite thumbnail generation for large video files
+COPY deploy/docker/policy.xml /etc/ImageMagick-6/policy.xml
+
+############ FULL IMAGE (with Whisper) ############
+# Use for: celery workers with transcription support
+FROM base AS full
+COPY requirements-full.txt ./
+RUN mkdir -p /root/.cache/ && \
+    chmod go+rwx /root/ && \
+    chmod go+rwx /root/.cache/
+RUN uv pip install -r requirements-full.txt

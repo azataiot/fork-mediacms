@@ -1,0 +1,138 @@
+name: Multi-arch Docker Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+    branches:
+      - main
+    paths:
+      - 'Dockerfile.backend'
+      - 'Dockerfile.frontend'
+      - 'requirements*.txt'
+      - 'frontend/**'
+      - '.github/workflows/docker-multiarch-build.yml'
+
+env:
+  DOCKER_USER: azataiot
+  BACKEND_IMAGE: azataiot/mediacms-backend
+  FRONTEND_IMAGE: azataiot/mediacms-frontend
+
+jobs:
+  build-backend:
+    name: Build Backend Image
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: base-lite
+            suffix: lite
+            description: "Django only (no FFmpeg/Bento4)"
+          - target: base
+            suffix: ""
+            description: "Django + FFmpeg + Bento4"
+          - target: full
+            suffix: full
+            description: "Django + FFmpeg + Bento4 + Whisper"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker meta for backend
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.BACKEND_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && matrix.target == 'base' }}
+            type=raw,value=lite,enable=${{ github.ref == 'refs/heads/main' && matrix.target == 'base-lite' }}
+            type=raw,value=full,enable=${{ github.ref == 'refs/heads/main' && matrix.target == 'full' }}
+            type=semver,pattern={{version}},enable=${{ matrix.target == 'base' }}
+            type=semver,pattern={{version}}-lite,enable=${{ matrix.target == 'base-lite' }}
+            type=semver,pattern={{version}}-full,enable=${{ matrix.target == 'full' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ matrix.target == 'base' }}
+            type=semver,pattern={{major}}.{{minor}}-lite,enable=${{ matrix.target == 'base-lite' }}
+            type=semver,pattern={{major}}.{{minor}}-full,enable=${{ matrix.target == 'full' }}
+          labels: |
+            org.opencontainers.image.title=MediaCMS Backend (${{ matrix.description }})
+            org.opencontainers.image.description=MediaCMS Backend - ${{ matrix.description }}. Multi-arch (amd64/arm64).
+            org.opencontainers.image.vendor=MediaCMS
+            org.opencontainers.image.url=https://mediacms.io/
+            org.opencontainers.image.source=https://github.com/mediacms-io/mediacms
+            org.opencontainers.image.licenses=AGPL-3.0
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.backend
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-frontend:
+    name: Build Frontend Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker meta for frontend
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.FRONTEND_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=MediaCMS Frontend
+            org.opencontainers.image.description=MediaCMS Frontend - React SPA served via Nginx. Multi-arch (amd64/arm64).
+            org.opencontainers.image.vendor=MediaCMS
+            org.opencontainers.image.url=https://mediacms.io/
+            org.opencontainers.image.source=https://github.com/mediacms-io/mediacms
+            org.opencontainers.image.licenses=AGPL-3.0
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.frontend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
