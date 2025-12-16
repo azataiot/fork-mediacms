@@ -64,7 +64,7 @@ mkdir -p /home/mediacms.io/mediacms/logs
 
 exec "$@"
 EOF
-chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 
