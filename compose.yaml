@@ -11,6 +11,8 @@ services:
     volumes:
       - ./:/home/mediacms.io/mediacms/
     command: "./deploy/docker/prestart.sh"
+    env_file:
+      - .env
     environment:
       DEVELOPMENT_MODE: True
       ENABLE_UWSGI: 'no'
@@ -37,6 +39,8 @@ services:
   web:
     image: mediacms-dev:latest
     command: "python manage.py runserver 0.0.0.0:8087"
+    env_file:
+      - .env
     environment:
       DEVELOPMENT_MODE: True
     ports:
@@ -51,6 +55,8 @@ services:
       replicas: 1
     volumes:
       - ./:/home/mediacms.io/mediacms/
+    env_file:
+      - .env
     environment:
       ENABLE_UWSGI: 'no'
       ENABLE_NGINX: 'no'
