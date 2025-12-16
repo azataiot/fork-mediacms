@@ -119,7 +119,7 @@ fi
 
 exec "$@"
 EOF
-chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Create start script that runs nginx + uwsgi
 RUN cat > /start.sh << 'EOF'
@@ -132,7 +132,7 @@ nginx
 # Start uwsgi in foreground
 exec uwsgi --ini /home/mediacms.io/mediacms/deploy/docker/uwsgi.ini
 EOF
-chmod +x /start.sh
+RUN chmod +x /start.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/start.sh"]
