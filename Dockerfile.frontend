@@ -84,9 +84,9 @@ server {
         add_header Access-Control-Allow-Headers 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range';
     }
 
-    # Proxy admin to backend
+    # Proxy admin to web server
     location /admin {
-        proxy_pass http://backend:80;
+        proxy_pass http://web:80;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
